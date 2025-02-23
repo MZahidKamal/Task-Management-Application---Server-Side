@@ -10,6 +10,8 @@ require('dotenv').config();                                                    /
 const port = process.env.PORT || 3000;                            //Default from Express.js but .env applied, therefore positioned after dotenv import.
 // console.log(port);
 
+const jwt = require('jsonwebtoken');                                       //Default from JSON Web Token.
+
 const cookieParser = require('cookie-parser');      //Default from cookie-parser package.
 
 
@@ -45,6 +47,28 @@ app.use(cookieParser());
 
 
 
+// Custom middleware for JWT verification.
+const verifyJWT = (req, res, next) => {
+    const email = req?.body?.email;
+    const token = req?.cookies?.token;
+    // console.log({email, token});
+    if (!token) {
+        return res.status(401).send({ message: "No token provided, authorization denied!" });
+    }
+    // Verify the JWT
+    jwt.verify(token, process.env.ACCESS_JWT_SECRET, (error, decoded) => {
+        if (error) {
+            return res.status(402).send({ message: "Invalid or expired token!" });
+        }
+        req.decoded_email = decoded?.data;
+        next(); // Call the next middleware.
+    });
+};
+
+
+
+
+
 /* MONGODB CONNECTIONS AND APIS --------------------------------------------------------------------------------------*/
 
 const {MongoClient, ServerApiVersion, ObjectId} = require('mongodb');
@@ -71,6 +95,88 @@ async function run() {
         // await client.db("admin").command({ ping: 1 });
         // console.log("Pinged your deployment. You successfully connected to MongoDB!");
         const database = client.db("xTaskManagementApplicationSystemDB");
+
+
+
+
+
+        /*====================================== AUTH RELATED APIs ===================================================*/
+
+        app.post('/generate_jwt_and_get_token', async (req, res) => {
+            const {email} = req.body;
+
+            //Generating JSON Web Token.
+            const token = jwt.sign({data: email}, process.env.ACCESS_JWT_SECRET, {expiresIn: '1h'});
+            // console.log(token)
+
+            //Setting JWT, at the client side, in the HTTP only cookie.
+            res.cookie('token', token, {
+                httpOnly: true,                                                                                                             //Cookies access restricted from client side.
+                secure: process.env.NODE_ENVIRONMENT === 'production',                                                                      //Set false while in dev environment, and true while in production.
+                sameSite: process.env.NODE_ENVIRONMENT === 'production' ? 'none' : 'Lax',                                                   //Protection from CSRF. None or lax supports most cross-origin use cases.
+                maxAge: 3600000,                                                                                                            //Token validity in millisecond. Setting this to cookies.
+            }).status(201).send({token, success: true, message: "Login Successful, JWT stored in Cookie!"});
+        })
+
+
+        app.post('/logout_and_clear_jwt', (req, res) => {
+            // Clearing the HTTP-only cookie by setting maxAge to 0.
+            res.clearCookie('token', {
+                httpOnly: true,                                                                                                             //Cookies access restricted from client side.
+                secure: process.env.NODE_ENVIRONMENT === 'production',                                                                      //Set false while in dev environment, and true while in production.
+                sameSite: process.env.NODE_ENVIRONMENT === 'production' ? 'none' : 'Lax',                                                   //Protection from CSRF. None or lax supports most cross-origin use cases.
+                maxAge: 0,                                                                                                                  //Token validity in millisecond. Setting this to cookies.
+            }).status(200).send({success: true, message: "Logout successful, cookie cleared!"});
+        });
+
+
+
+
+
+        /*====================================== USERS COLLECTION ====================================================*/
+
+        /* CREATING (IF NOT PRESENT) / CONNECTING THE COLLECTION NAMED "userCollection" AND ACCESS IT */
+        const userCollection = database.collection("userCollection");
+
+
+        /* VERIFY JWT MIDDLEWARE WILL NOT WORK HERE, USER MAY UNAVAILABLE */
+        app.post('/users/add_new_user', async (req, res) => {
+            try {
+                const {newUser} = req.body;
+                const result = await userCollection.insertOne(newUser);
+                if (result){
+                    res.send({status: 201, message: "User created successfully."});
+                }
+            } catch (error) {
+                res.send({status: 500, message: "Internal Server Error"});
+            }
+        });
+
+
+        /* VERIFY JWT MIDDLEWARE WILL NOT WORK HERE, USER MAY UNAVAILABLE */
+        app.post('/users/find_availability_by_email', async (req, res) => {
+            const { email } = req.body;
+            const query = { email: email };
+            const result = await userCollection.findOne(query);
+            if (result) {
+                res.send({ status: 409, exists: true, message: 'Registration failed. Email already exists!' });
+            } else {
+                res.send({ status: 404, exists: false, message: 'Email address not exists!' });
+            }
+        });
+
+
+        /* VERIFY JWT MIDDLEWARE WILL NOT WORK HERE, USER MAY UNAVAILABLE */
+        app.post('/users/get_user_by_email', async (req, res) => {
+            const { email } = req.body;
+            const query = { email: email };
+            const result = await userCollection.findOne(query);
+            // res.status(200).send(result);
+            res.send({status: 200, data: result, message: 'Login successful!'});
+        })
+
+
+
 
 
         /*============================================================================================================*/
