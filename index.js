@@ -52,13 +52,16 @@ const verifyJWT = (req, res, next) => {
     const email = req?.body?.email;
     const token = req?.cookies?.token;
     // console.log({email, token});
+
+    // If there is no JWT
     if (!token) {
-        return res.status(401).send({ message: "No token provided, authorization denied!" });
+        return res.send({status: 401, message: "No token provided, authorization denied!"});
     }
+
     // Verify the JWT
     jwt.verify(token, process.env.ACCESS_JWT_SECRET, (error, decoded) => {
         if (error) {
-            return res.status(402).send({ message: "Invalid or expired token!" });
+            return res.send({status: 402, message: "Invalid or expired token!"});
         }
         req.decoded_email = decoded?.data;
         next(); // Call the next middleware.
@@ -173,6 +176,137 @@ async function run() {
             const result = await userCollection.findOne(query);
             // res.status(200).send(result);
             res.send({status: 200, data: result, message: 'Login successful!'});
+        })
+
+
+
+
+
+        /*====================================== TASKS COLLECTION ====================================================*/
+
+        /* CREATING (IF NOT PRESENT) / CONNECTING THE COLLECTION NAMED "tasksCollection" AND ACCESS IT */
+        const tasksCollection = database.collection("tasksCollection");
+
+
+        app.post('/tasks/create_new_task', verifyJWT, async (req, res) => {
+            const {userEmail, newTaskObj} = req.body;
+            // console.log(userEmail, newTaskObj);
+
+            // Verifying user authenticity.
+            const {decoded_email} = req;
+            // console.log(email, decoded_email);
+            if (userEmail !== decoded_email) {
+                return res.send({status: 403, message: "Forbidden access, email mismatch!"});
+            }
+
+            // Inserting the task into the collection.
+            const result = await tasksCollection.insertOne(newTaskObj);
+
+            //Saving the post id in the user data.
+            const taskId = result?.insertedId.toString();
+            const userFilter = {email: userEmail};
+            const userUpdate = {$push: {createdTasks: taskId}};
+            const options = {upsert: false, returnDocument: 'after'};
+            const userResult = await userCollection.findOneAndUpdate(userFilter, userUpdate, options);
+
+            return res.send({status: 201, message: "Task created successfully"});
+        });
+
+
+        app.get('/tasks/all_my_tasks', verifyJWT, async (req, res) => {
+            const userEmail = req?.query?.userEmail;
+            // console.log(userEmail);
+
+            // Verifying user authenticity.
+            const {decoded_email} = req;
+            // console.log(email, decoded_email);
+            if (userEmail !== decoded_email) {
+                return res.send({status: 403, message: "Forbidden access, email mismatch!"});
+            }
+
+            // Fetch the user by email.
+            const userQuery = {email: userEmail};
+            const userResult = await userCollection.findOne(userQuery);
+
+            // If user don't exists.
+            if (!userResult) {
+                // return res.status(404).send({ message: 'User not found' });
+                return res.send({status: 404, message: 'User not found'});
+            }
+
+            // Fetch all my tasks.
+            const myTasksQuery = { _id: { $in: userResult.createdTasks.map(id => new ObjectId(id)) } };
+            const myTasksArray = await tasksCollection.find(myTasksQuery).toArray();
+            return res.send({status: 200, data: myTasksArray});
+        })
+
+
+        app.patch('/tasks/update_a_task', verifyJWT, async (req, res) => {
+            const { userEmail, updatedTaskObj } = req.body;
+            // console.log(updatedTaskObj);
+
+            // Verifying user authenticity.
+            const {decoded_email} = req;
+            // console.log(email, decoded_email);
+            if (userEmail !== decoded_email) {
+                return res.send({status: 403, message: "Forbidden access, email mismatch!"});
+            }
+
+            // Extract the necessary fields for the update
+            const { _id, title, description, deadline, category } = updatedTaskObj;
+
+            const filter = { _id: new ObjectId(_id) };
+
+            const existingTask = await tasksCollection.findOne(filter);
+            if (!existingTask) {
+                return res.send({ status: 404, message: 'Post not found' });
+            }
+
+            // Create the update object only with the fields that need updating
+            const update = {
+                $set: {
+                    title,
+                    description,
+                    deadline,
+                    category
+                },
+            };
+            const options = { upsert: false };
+
+            const result = await tasksCollection.updateOne(filter, update, options);
+            if(result?.modifiedCount > 0){
+                return res.send({ status: 200, message: 'Post updated successfully!' });
+            }
+        })
+
+
+        app.delete('/tasks/delete_one_of_my_task', verifyJWT, async (req, res) => {
+            const {userEmail, taskId} = req?.query;
+            // console.log(userEmail, taskId);
+
+            // Verifying user authenticity.
+            const {decoded_email} = req;
+            // console.log(userEmail, decoded_email);
+            if (userEmail !== decoded_email) {
+                return res.send({status: 403, message: "Forbidden access, email mismatch!"});
+            }
+
+            const taskID = new ObjectId(taskId);
+            const filter = {_id: taskID};
+            const result = await tasksCollection.deleteOne(filter);
+
+
+            if (result?.deletedCount > 0) {
+
+                const userFilter = {email: userEmail};
+                const userUpdate = {$pull: {createdTasks: taskId}};
+                const options = {upsert: false, returnDocument: 'after'};
+                const userResult = await userCollection.findOneAndUpdate(userFilter, userUpdate, options);
+
+                res.send({status: 200, message: 'Task deleted successfully!'});
+            } else {
+                res.send({status: 404, message: 'Task not found. Please try again!'});
+            }
         })
 
 
