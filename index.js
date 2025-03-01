@@ -182,6 +182,21 @@ async function run() {
 
 
 
+        /*====================================== CATEGORIES COLLECTION ===============================================*/
+
+        /* CREATING (IF NOT PRESENT) / CONNECTING THE COLLECTION NAMED "categoriesCollection" AND ACCESS IT */
+        const categoriesCollection = database.collection("categoriesCollection");
+
+
+        app.get('/categories/get_all_categories', async (req, res) => {
+            const result = await categoriesCollection.find().toArray();
+            return res.send({status: 200, data: result});
+        })
+
+
+
+
+
         /*====================================== TASKS COLLECTION ====================================================*/
 
         /* CREATING (IF NOT PRESENT) / CONNECTING THE COLLECTION NAMED "tasksCollection" AND ACCESS IT */
@@ -202,10 +217,15 @@ async function run() {
             // Inserting the task into the collection.
             const result = await tasksCollection.insertOne(newTaskObj);
 
-            //Saving the post id in the user data.
+            //Saving the task id in the user data.
             const taskId = result?.insertedId.toString();
             const userFilter = {email: userEmail};
-            const userUpdate = {$push: {createdTasks: taskId}};
+
+            let userUpdate = null;
+            if (newTaskObj?.category === 'To Do') userUpdate = {$push: {"myTasks.myToDoTasks": taskId}};
+            else if (newTaskObj?.category === 'In Progress') userUpdate = {$push: {"myTasks.myInProgressTasks": taskId}};
+            else if (newTaskObj?.category === 'Done') userUpdate = {$push: {"myTasks.myDoneTasks": taskId}};
+
             const options = {upsert: false, returnDocument: 'after'};
             const userResult = await userCollection.findOneAndUpdate(userFilter, userUpdate, options);
 
@@ -213,7 +233,7 @@ async function run() {
         });
 
 
-        app.get('/tasks/all_my_tasks', verifyJWT, async (req, res) => {
+        app.get('/tasks/all_my_task_ids', verifyJWT, async (req, res) => {
             const userEmail = req?.query?.userEmail;
             // console.log(userEmail);
 
@@ -235,9 +255,71 @@ async function run() {
             }
 
             // Fetch all my tasks.
-            const myTasksQuery = { _id: { $in: userResult.createdTasks.map(id => new ObjectId(id)) } };
-            const myTasksArray = await tasksCollection.find(myTasksQuery).toArray();
-            return res.send({status: 200, data: myTasksArray});
+            /*const myTasksArray = {
+                myToDoTasks: await tasksCollection.find({_id: {$in: userResult.myTasks.myToDoTasks.map(id => new ObjectId(id))}}).toArray(),
+                myInProgressTasks: await tasksCollection.find({_id: {$in: userResult.myTasks.myInProgressTasks.map(id => new ObjectId(id))}}).toArray(),
+                myDoneTasks: await tasksCollection.find({_id: {$in: userResult.myTasks.myDoneTasks.map(id => new ObjectId(id))}}).toArray()
+            };*/
+            const myTasksIdsArray = {
+                myToDoTasks: await userResult.myTasks.myToDoTasks,
+                myInProgressTasks: await userResult.myTasks.myInProgressTasks,
+                myDoneTasks: await userResult.myTasks.myDoneTasks
+            };
+            // console.log(myTasksArray);
+            return res.send({status: 200, data: myTasksIdsArray});
+        })
+
+
+        /*app.get('/tasks/array_of_tasks_by_array_of_ids', verifyJWT, async (req, res) => {
+            const {userEmail, arrayOfIds} = req?.query;
+            // console.log(userEmail, arrayOfIds);
+
+            // Verifying user authenticity.
+            const {decoded_email} = req;
+            // console.log(email, decoded_email);
+            if (userEmail !== decoded_email) {
+                return res.send({status: 403, message: "Forbidden access, email mismatch!"});
+            }
+
+            // Fetch the user by email.
+            const userQuery = {email: userEmail};
+            const userResult = await userCollection.findOne(userQuery);
+
+            // If user don't exists.
+            if (!userResult) {
+                // return res.status(404).send({ message: 'User not found' });
+                return res.send({status: 404, message: 'User not found'});
+            }
+
+            // Handle arrayOfIds validation and conversion
+            if (!arrayOfIds || !Array.isArray(arrayOfIds) || arrayOfIds.length === 0) {
+                return res.send({ status: 400, message: 'Invalid or empty arrayOfIds' });
+            }
+
+            // Fetch all my tasks.
+            const tasksArrayQuery = { _id: { $in: arrayOfIds.map(id => new ObjectId(id)) } };
+            const tasksArray = await tasksCollection.find(tasksArrayQuery).toArray();
+            // console.log(myTasksArray);
+            return res.send({status: 200, data: tasksArray});
+        })*/
+
+
+        app.get('/tasks/tasks_details_by_id', verifyJWT, async (req, res) => {
+            const {userEmail, taskId} = req?.query;
+            // console.log(userEmail, taskId);
+
+            // Verifying user authenticity.
+            const {decoded_email} = req;
+            // console.log(email, decoded_email);
+            if (userEmail !== decoded_email) {
+                return res.send({status: 403, message: "Forbidden access, email mismatch!"});
+            }
+
+
+            // Fetch task details.
+            const taskQuery = { _id: new ObjectId(taskId) };
+            const taskResult = await tasksCollection.findOne(taskQuery);
+            return res.send({status: 200, data: taskResult});
         })
 
 
@@ -259,7 +341,7 @@ async function run() {
 
             const existingTask = await tasksCollection.findOne(filter);
             if (!existingTask) {
-                return res.send({ status: 404, message: 'Post not found' });
+                return res.send({ status: 404, message: 'Task not found' });
             }
 
             // Create the update object only with the fields that need updating
@@ -275,9 +357,65 @@ async function run() {
 
             const result = await tasksCollection.updateOne(filter, update, options);
             if(result?.modifiedCount > 0){
-                return res.send({ status: 200, message: 'Post updated successfully!' });
+                return res.send({ status: 200, message: 'Task updated successfully!' });
             }
         })
+
+
+        app.patch('/tasks/update_task_position_in_category', verifyJWT, async (req, res) => {
+            const { userEmail, taskId, categoryId } = req.body;
+
+            // Verifying user authenticity.
+            const { decoded_email } = req;
+            if (userEmail !== decoded_email) {
+                return res.send({ status: 403, message: "Forbidden access, email mismatch!" });
+            }
+
+            // Finding the task.
+            const taskFilter = { _id: new ObjectId(taskId) };
+            const existingTask = await tasksCollection.findOne(taskFilter);
+            if (!existingTask) {
+                return res.send({ status: 404, message: 'Task not found' });
+            }
+
+            // Finding the previous and following category.
+            const previousCategory = existingTask?.category;
+            const categoryFilter = { _id: new ObjectId(categoryId) };
+            const followingCategory = await categoriesCollection.findOne(categoryFilter);
+
+            // Check if following category exists and has a name
+            if (!followingCategory || !followingCategory.name) {
+                return res.send({ status: 404, message: 'Category not found or invalid' });
+            }
+
+            // Updating the category of the task object.
+            const updateTask = { $set: { category: followingCategory.name } };
+            const taskResult = await tasksCollection.updateOne(taskFilter, updateTask);
+
+            if (taskResult.modifiedCount > 0) {
+                // Reflecting the update in the user object.
+                const userFilter = { email: userEmail };
+
+                let userUpdate_01 = null;
+                if (previousCategory === 'To Do') userUpdate_01 = { $pull: { "myTasks.myToDoTasks": taskId } };
+                else if (previousCategory === 'In Progress') userUpdate_01 = { $pull: { "myTasks.myInProgressTasks": taskId } };
+                else if (previousCategory === 'Done') userUpdate_01 = { $pull: { "myTasks.myDoneTasks": taskId } };
+
+                const userResult_01 = await userCollection.updateOne(userFilter, userUpdate_01);
+
+                let userUpdate_02 = null;
+                if (followingCategory.name === 'To Do') userUpdate_02 = { $push: { "myTasks.myToDoTasks": taskId } };
+                else if (followingCategory.name === 'In Progress') userUpdate_02 = { $push: { "myTasks.myInProgressTasks": taskId } };
+                else if (followingCategory.name === 'Done') userUpdate_02 = { $push: { "myTasks.myDoneTasks": taskId } };
+
+                const userResult_02 = await userCollection.updateOne(userFilter, userUpdate_02);
+
+                if (userResult_01.modifiedCount > 0 && userResult_02.modifiedCount > 0) {
+                    return res.send({ status: 200, message: 'Task category updated successfully!' });
+                }
+            }
+            return res.send({ status: 500, message: 'Failed to update task category' });
+        });
 
 
         app.delete('/tasks/delete_one_of_my_task', verifyJWT, async (req, res) => {
@@ -293,13 +431,20 @@ async function run() {
 
             const taskID = new ObjectId(taskId);
             const filter = {_id: taskID};
-            const result = await tasksCollection.deleteOne(filter);
+            const taskResult = await tasksCollection.findOne(filter);
+            const taskCategory = taskResult?.category;
+            const deleteResult = await tasksCollection.deleteOne(filter);
 
-
-            if (result?.deletedCount > 0) {
+            if (deleteResult?.deletedCount > 0) {
 
                 const userFilter = {email: userEmail};
-                const userUpdate = {$pull: {createdTasks: taskId}};
+
+                let userUpdate = {};
+                if (taskCategory === 'To Do') userUpdate = {$pull: {"myTasks.myToDoTasks": taskId}};
+                else if (taskCategory === 'In Progress') userUpdate = {$pull: {"myTasks.myInProgressTasks": taskId}};
+                else if (taskCategory === 'Done') userUpdate = {$pull: {"myTasks.myDoneTasks": taskId}};
+
+
                 const options = {upsert: false, returnDocument: 'after'};
                 const userResult = await userCollection.findOneAndUpdate(userFilter, userUpdate, options);
 
